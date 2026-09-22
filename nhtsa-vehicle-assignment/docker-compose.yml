@@ -1,0 +1,50 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: nhtsa
+
+    ports:
+      - '5432:5432'
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d nhtsa']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    environment:
+      PORT: 3000
+
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_USER: postgres
+      DATABASE_PASSWORD: postgres
+      DATABASE_NAME: nhtsa
+
+      NHTSA_BASE_URL: https://vpic.nhtsa.dot.gov/api/vehicles
+
+      NHTSA_CONCURRENCY: 10
+      NHTSA_TIMEOUT_MS: 15000
+      NHTSA_RETRIES: 3
+
+      DB_SYNCHRONIZE: 'true'
+
+    ports:
+      - '3000:3000'
+
+volumes:
+  postgres_data:
