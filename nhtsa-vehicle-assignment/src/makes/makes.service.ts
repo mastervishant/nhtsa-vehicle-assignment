@@ -1,11 +1,12 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { PinoLogger } from 'nestjs-pino';
 import { Repository } from 'typeorm';
 
 import { MakeEntity } from './make.entity';
 import { VehicleTypeEntity } from './vehicle-type.entity';
-import { NhtsaClient } from './nhtsa.client';
 import { MakeDto } from './dto/make.dto';
+import { NhtsaClient } from './nhtsa.client';
 
 @Injectable()
 export class MakesService {
@@ -19,69 +20,122 @@ export class MakesService {
     private readonly vehicleTypeRepository: Repository<VehicleTypeEntity>,
 
     private readonly nhtsaClient: NhtsaClient,
-  ) {}
 
-  /**
-   * Returns all makes with their vehicle types.
-   */
+    private readonly logger: PinoLogger,
+  ) {
+    this.logger.setContext(MakesService.name);
+  }
+
   async findAll(): Promise<MakeDto[]> {
-    const makes = await this.makeRepository.find({
-      relations: {
-        vehicleTypes: true,
-      },
-      order: {
-        id: 'ASC',
-      },
-    });
+    try {
+      this.logger.debug(
+        'Fetching all makes from database',
+      );
 
-    return makes.map((make) => this.toDto(make));
-  }
+      const makes = await this.makeRepository.find({
+        relations: {
+          vehicleTypes: true,
+        },
+        order: {
+          id: 'ASC',
+        },
+      });
 
-  /**
-   * Returns one make with its vehicle types.
-   */
-  async findOne(makeId: number): Promise<MakeDto | null> {
-    const make = await this.makeRepository.findOne({
-      where: {
-        id: makeId,
-      },
-      relations: {
-        vehicleTypes: true,
-      },
-    });
+      this.logger.debug(
+        {
+          count: makes.length,
+        },
+        'Fetched makes from database',
+      );
 
-    if (!make) {
-      return null;
+      return makes.map((make) =>
+        this.toDto(make),
+      );
+    } catch (error) {
+      this.logger.error(
+        {
+          err: error,
+          operation: 'findAll',
+        },
+        'Failed to fetch makes from database',
+      );
+
+      throw error;
     }
-
-    return this.toDto(make);
   }
 
-  /**
-   * Fetches all makes from NHTSA and then fetches the
-   * vehicle types for every make using bounded concurrency.
-   */
+  async findOne(
+    makeId: number,
+  ): Promise<MakeDto | null> {
+    try {
+      this.logger.debug(
+        {
+          makeId,
+        },
+        'Fetching make from database',
+      );
+
+      const make =
+        await this.makeRepository.findOne({
+          where: {
+            id: makeId,
+          },
+          relations: {
+            vehicleTypes: true,
+          },
+        });
+
+      if (!make) {
+        this.logger.debug(
+          {
+            makeId,
+          },
+          'Make not found',
+        );
+
+        return null;
+      }
+
+      return this.toDto(make);
+    } catch (error) {
+      this.logger.error(
+        {
+          err: error,
+          makeId,
+          operation: 'findOne',
+        },
+        'Failed to fetch make from database',
+      );
+
+      throw error;
+    }
+  }
+
   async ingest(): Promise<{
     makesProcessed: number;
     vehicleTypesProcessed: number;
   }> {
-    console.log('Fetching all makes from NHTSA...');
+    this.logger.info(
+      {
+        concurrency: this.concurrency,
+      },
+      'Starting NHTSA data ingestion',
+    );
 
-    const makes = await this.nhtsaClient.getAllMakes();
+    const makes =
+      await this.nhtsaClient.getAllMakes();
 
-    console.log(`Found ${makes.length} makes.`);
+    this.logger.info(
+      {
+        count: makes.length,
+      },
+      'Fetched makes from NHTSA for ingestion',
+    );
 
     let makesProcessed = 0;
     let vehicleTypesProcessed = 0;
-
     let currentIndex = 0;
 
-    /**
-     * Each worker processes one make at a time.
-     *
-     * The number of workers is limited by this.concurrency,
-     * so we don't send requests for every make simultaneously.
-     */
     const worker = async (): Promise<void> => {
       while (true) {
         const index = currentIndex++;
@@ -93,19 +147,21 @@ export class MakesService {
         const make = makes[index];
 
         try {
-          console.log(
-            `[${index + 1}/${makes.length}] Processing make ${make.makeId} - ${make.makeName}`,
+          this.logger.info(
+            {
+              index: index + 1,
+              total: makes.length,
+              makeId: make.makeId,
+              makeName: make.makeName,
+            },
+            'Processing make',
           );
 
-          /*
-           * Fetch vehicle types from NHTSA.
-           */
           const vehicleTypes =
-            await this.nhtsaClient.getVehicleTypesForMakeId(make.makeId);
+            await this.nhtsaClient.getVehicleTypesForMakeId(
+              make.makeId,
+            );
 
-          /*
-           * Insert/update the make.
-           */
           await this.makeRepository.upsert(
             {
               id: make.makeId,
@@ -114,19 +170,10 @@ export class MakesService {
             ['id'],
           );
 
-          /*
-           * Remove existing vehicle types for this make.
-           *
-           * This makes the ingestion idempotent. If we run the
-           * ingestion again, stale vehicle types won't remain.
-           */
           await this.vehicleTypeRepository.delete({
             makeId: make.makeId,
           });
 
-          /*
-           * Insert the latest vehicle types.
-           */
           if (vehicleTypes.length > 0) {
             await this.vehicleTypeRepository.insert(
               vehicleTypes.map((vehicleType) => ({
@@ -138,38 +185,57 @@ export class MakesService {
           }
 
           makesProcessed += 1;
-          vehicleTypesProcessed += vehicleTypes.length;
+          vehicleTypesProcessed +=
+            vehicleTypes.length;
 
-          console.log(
-            `Completed ${make.makeId} - ${make.makeName}: ` +
-              `${vehicleTypes.length} vehicle types`,
+          this.logger.info(
+            {
+              makeId: make.makeId,
+              makeName: make.makeName,
+              vehicleTypes: vehicleTypes.length,
+              makesProcessed,
+              totalMakes: makes.length,
+            },
+            'Make processed successfully',
           );
         } catch (error) {
-          /*
-           * Don't stop the complete ingestion because one make failed.
-           * The NHTSA client already handles retries.
-           */
-          console.error(
-            `Failed to process make ${make.makeId} - ${make.makeName}`,
-            error,
+          this.logger.error(
+            {
+              err: error,
+              index: index + 1,
+              total: makes.length,
+              makeId: make.makeId,
+              makeName: make.makeName,
+            },
+            'Unexpected error while processing make',
           );
         }
       }
     };
 
-    /*
-     * Start a maximum of `this.concurrency` workers.
-     */
+    const workerCount = Math.min(
+      this.concurrency,
+      makes.length,
+    );
+
     const workers = Array.from(
       {
-        length: Math.min(this.concurrency, makes.length),
+        length: workerCount,
       },
       () => worker(),
     );
 
     await Promise.all(workers);
 
-    console.log('Ingestion completed.');
+    this.logger.info(
+      {
+        makesProcessed,
+        makesFailed:
+          makes.length - makesProcessed,
+        vehicleTypesProcessed,
+      },
+      'NHTSA data ingestion completed',
+    );
 
     return {
       makesProcessed,
@@ -177,10 +243,9 @@ export class MakesService {
     };
   }
 
-  /**
-   * Converts the database entity into the GraphQL DTO.
-   */
-  private toDto(make: MakeEntity): MakeDto {
+  private toDto(
+    make: MakeEntity,
+  ): MakeDto {
     return {
       makeId: make.id,
       makeName: make.name,

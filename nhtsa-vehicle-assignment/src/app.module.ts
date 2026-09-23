@@ -1,69 +1,103 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule, ConfigService } from '@nestjs/config';
+import { ConfigService } from '@nestjs/config';
 import { GraphQLModule } from '@nestjs/graphql';
-import { ApolloDriver, ApolloDriverConfig } from '@nestjs/apollo';
+import {
+  ApolloDriver,
+  ApolloDriverConfig,
+} from '@nestjs/apollo';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { LoggerModule } from 'nestjs-pino';
 
+import { AppCacheModule } from './cache/cache.module';
+import { AppConfigModule } from './config/config.module';
 import { MakesModule } from './makes/makes.module';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({
-      isGlobal: true
+    AppConfigModule,
+
+    LoggerModule.forRootAsync({
+      imports: [AppConfigModule],
+      inject: [ConfigService],
+
+      useFactory: (
+        configService: ConfigService,
+      ) => ({
+        pinoHttp: {
+          level: configService.get<string>(
+            'logging.level',
+            'info',
+          ),
+
+          transport:
+            configService.get<string>(
+              'app.environment',
+              'development',
+            ) !== 'production'
+              ? {
+                  target: 'pino-pretty',
+                  options: {
+                    singleLine: true,
+                    colorize: true,
+                    translateTime: 'SYS:standard',
+                  },
+                }
+              : undefined,
+        },
+      }),
     }),
 
     TypeOrmModule.forRootAsync({
+      imports: [AppConfigModule],
       inject: [ConfigService],
 
-      useFactory: (config: ConfigService) => ({
-        type: 'postgres',
+      useFactory: (
+        configService: ConfigService,
+      ) => ({
+        type: 'postgres' as const,
 
-        host: config.get<string>(
-          'DATABASE_HOST',
-          'localhost'
+        host: configService.get<string>(
+          'database.host',
+          'localhost',
         ),
 
-        port: config.get<number>(
-          'DATABASE_PORT',
-          5432
+        port: configService.get<number>(
+          'database.port',
+          5432,
         ),
 
-        username: config.get<string>(
-          'DATABASE_USER',
-          'postgres'
+        username: configService.get<string>(
+          'database.username',
+          'postgres',
         ),
 
-        password: config.get<string>(
-          'DATABASE_PASSWORD',
-          'postgres'
+        password: configService.get<string>(
+          'database.password',
+          'postgres',
         ),
 
-        database: config.get<string>(
-          'DATABASE_NAME',
-          'nhtsa'
+        database: configService.get<string>(
+          'database.name',
+          'nhtsa',
         ),
 
         autoLoadEntities: true,
 
-        synchronize:
-          config.get<string>(
-            'DB_SYNCHRONIZE',
-            'true'
-          ) === 'true'
-      })
+        synchronize: configService.get<boolean>(
+          'database.synchronize',
+          false,
+        ),
+      }),
     }),
+
+    AppCacheModule,
 
     GraphQLModule.forRoot<ApolloDriverConfig>({
       driver: ApolloDriver,
-
       autoSchemaFile: true,
-
-      sortSchema: true,
-
-      introspection: true
     }),
 
-    MakesModule
-  ]
+    MakesModule,
+  ],
 })
 export class AppModule {}
