@@ -4,7 +4,6 @@ import { MakesService } from '../src/makes/makes.service';
 import { MakeEntity } from '../src/makes/make.entity';
 import { VehicleTypeEntity } from '../src/makes/vehicle-type.entity';
 import { NhtsaClient } from '../src/makes/nhtsa.client';
-import { MakeDto } from '../src/makes/dto/make.dto';
 
 describe('MakesService', () => {
   let service: MakesService;
